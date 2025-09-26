@@ -1,0 +1,90 @@
+name: CD — Deploy to AKS (week08)
+
+on:
+  workflow_run:
+    workflows: ["CI — Test, Build & Push (week08)"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
+
+jobs:
+  deploy_backend:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Write kubeconfig from secret
+        run: |
+          echo "${{ secrets.KUBECONFIG_B64 }}" | base64 -d > $HOME/kubeconfig
+          echo "KUBECONFIG=$HOME/kubeconfig" >> $GITHUB_ENV
+
+      - name: Install kubectl
+        run: |
+          curl -L -o kubectl https://dl.k8s.io/release/v1.30.1/bin/linux/amd64/kubectl
+          chmod +x kubectl && sudo mv kubectl /usr/local/bin/
+
+      - name: Inject ACR into backend manifests & deploy
+        run: |
+          set -euo pipefail
+          # replace image placeholders (if any) or just ensure manifests use the right ACR
+          sed -i "s|AZURE_CONTAINER_REGISTRY|${ACR_LOGIN_SERVER}|g" k8s/product-service.yaml
+          sed -i "s|<AZURE_ACR>|${ACR_LOGIN_SERVER}|g" k8s/order-service.yaml
+
+          # infra first (config, secrets, dbs)
+          kubectl --kubeconfig "$KUBECONFIG" apply -f k8s/secrets.yaml
+          kubectl --kubeconfig "$KUBECONFIG" apply -f k8s/configmaps.yaml
+          kubectl --kubeconfig "$KUBECONFIG" apply -f k8s/product-db.yaml
+          kubectl --kubeconfig "$KUBECONFIG" apply -f k8s/order-db.yaml
+
+          # services
+          kubectl --kubeconfig "$KUBECONFIG" apply -f k8s/product-service.yaml
+          kubectl --kubeconfig "$KUBECONFIG" apply -f k8s/order-service.yaml
+
+      - name: Wait and show backend EXTERNAL-IPs
+        run: |
+          kubectl --kubeconfig "$KUBECONFIG" get svc -w &
+          sleep 15
+          echo "PRODUCT_IP=$(kubectl --kubeconfig "$KUBECONFIG" get svc product-service-w08e1 -o jsonpath='{.status.loadBalancer.ingress[0].ip}')" >> $GITHUB_ENV
+          echo "ORDER_IP=$(kubectl --kubeconfig "$KUBECONFIG" get svc order-service-w08e1 -o jsonpath='{.status.loadBalancer.ingress[0].ip}')" >> $GITHUB_ENV
+          echo "Product: $PRODUCT_IP"
+          echo "Order:   $ORDER_IP"
+
+  deploy_frontend:
+    needs: deploy_backend
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Write kubeconfig from secret
+        run: |
+          echo "${{ secrets.KUBECONFIG_B64 }}" | base64 -d > $HOME/kubeconfig
+          echo "KUBECONFIG=$HOME/kubeconfig" >> $GITHUB_ENV
+
+      - name: Install kubectl
+        run: |
+          curl -L -o kubectl https://dl.k8s.io/release/v1.30.1/bin/linux/amd64/kubectl
+          chmod +x kubectl && sudo mv kubectl /usr/local/bin/
+
+      - name: Inject ACR into frontend manifest & deploy
+        run: |
+          set -euo pipefail
+          sed -i "s|ACR_LOGIN_SERVER|${ACR_LOGIN_SERVER}|g" k8s/frontend.yaml
+          kubectl --kubeconfig "$KUBECONFIG" apply -f k8s/frontend.yaml
+
+      - name: Wait and show FRONTEND IP
+        run: |
+          for i in {1..30}; do
+            IP=$(kubectl --kubeconfig "$KUBECONFIG" get svc frontend-w08e1 -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+            if [ -n "$IP" ]; then echo "FRONTEND_IP=$IP" >> $GITHUB_ENV; break; fi
+            sleep 10
+          done
+          echo "Frontend: $FRONTEND_IP"
