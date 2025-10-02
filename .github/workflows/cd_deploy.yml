@@ -44,15 +44,15 @@ jobs:
 
       - name: Apply shared manifests
         run: |
-          kubectl apply -f week08/k8s/configmaps.yaml
-          kubectl apply -f week08/k8s/secrets.yaml
-          kubectl apply -f week08/k8s/product-db.yaml
-          kubectl apply -f week08/k8s/order-db.yaml
+          kubectl apply -f k8s/configmaps.yaml
+          kubectl apply -f k8s/secrets.yaml
+          kubectl apply -f k8s/product-db.yaml
+          kubectl apply -f k8s/order-db.yaml
 
       - name: Deploy backends (set image tags)
         run: |
-          kubectl apply -f week08/k8s/product-service.yaml
-          kubectl apply -f week08/k8s/order-service.yaml
+          kubectl apply -f k8s/product-service.yaml
+          kubectl apply -f k8s/order-service.yaml
           TAG="${{ github.event.inputs.image_tag || 'latest' }}"
           kubectl set image deploy/product-service-w08e1 product-service-container=${{ env.ACR_LOGIN_SERVER }}/product_service:$TAG
           kubectl set image deploy/order-service-w08e1   order-service-container=${{ env.ACR_LOGIN_SERVER }}/order_service:$TAG
@@ -64,7 +64,7 @@ jobs:
 
       - name: Deploy frontend (set image tag)
         run: |
-          kubectl apply -f week08/k8s/frontend.yaml
+          kubectl apply -f k8s/frontend.yaml
           TAG="${{ github.event.inputs.image_tag || 'latest' }}"
           kubectl set image deploy/frontend frontend-container=${{ env.ACR_LOGIN_SERVER }}/frontend:$TAG
 
