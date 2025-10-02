@@ -1,0 +1,74 @@
+name: CD – deploy backend & frontend to AKS
+
+on:
+  push: # auto for dev
+    branches: [dev]
+    paths:
+      [
+        "backend/**",
+        "frontend/**",
+        "week08/k8s/**",
+        ".github/workflows/cd_deploy.yml",
+      ]
+  workflow_dispatch: # manual (use for main/prod style)
+    inputs:
+      image_tag:
+        description: "tag to deploy (sha or latest)"
+        required: true
+        default: "latest"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cd-deploy
+  cancel-in-progress: true
+
+env:
+  ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Configure kubeconfig from secret
+        run: |
+          mkdir -p $HOME/.kube
+          echo "${{ secrets.KUBECONFIG_B64 }}" | base64 -d > $HOME/.kube/config
+          chmod 600 $HOME/.kube/config
+
+      - name: Apply shared manifests
+        run: |
+          kubectl apply -f week08/k8s/configmaps.yaml
+          kubectl apply -f week08/k8s/secrets.yaml
+          kubectl apply -f week08/k8s/product-db.yaml
+          kubectl apply -f week08/k8s/order-db.yaml
+
+      - name: Deploy backends (set image tags)
+        run: |
+          kubectl apply -f week08/k8s/product-service.yaml
+          kubectl apply -f week08/k8s/order-service.yaml
+          TAG="${{ github.event.inputs.image_tag || 'latest' }}"
+          kubectl set image deploy/product-service-w08e1 product-service-container=${{ env.ACR_LOGIN_SERVER }}/product_service:$TAG
+          kubectl set image deploy/order-service-w08e1   order-service-container=${{ env.ACR_LOGIN_SERVER }}/order_service:$TAG
+
+      - name: Rollout check (backends)
+        run: |
+          kubectl rollout status deploy/product-service-w08e1 --timeout=180s
+          kubectl rollout status deploy/order-service-w08e1   --timeout=180s
+
+      - name: Deploy frontend (set image tag)
+        run: |
+          kubectl apply -f week08/k8s/frontend.yaml
+          TAG="${{ github.event.inputs.image_tag || 'latest' }}"
+          kubectl set image deploy/frontend frontend-container=${{ env.ACR_LOGIN_SERVER }}/frontend:$TAG
+
+      - name: Rollout check (frontend) + services
+        run: |
+          kubectl rollout status deploy/frontend --timeout=180s
+          kubectl get svc -o wide
